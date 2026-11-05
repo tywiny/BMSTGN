@@ -16,37 +16,17 @@
 
 | 附表 1 输入组 | 附表字段与形状 | 发布文件中的对应表示 |
 |---|---|---|
-| 任务工艺与材料信息 | `task [N,16]`、`material_required [N]`、`input_mass_g [N]` | `bmstgn` 的 `craft [N,39]`、`group [N]`、`material [N]` 表示工艺数值及类别，`demand [N,2]` 表示物料需求件数和输入质量。对比模型读取 `comparison.static` 的相应通道。 |
+| 任务工艺与材料信息 | `task [N,16]`、`material_required [N]`、`input_mass_g [N]` | `bmstgn` 的 `craft [N,39]`、`group [N]`、`material [N]` 表示组焊口总数等工艺数值及工艺、材料类别，`demand [N,2]` 表示物料需求件数和输入质量。对比模型读取 `comparison.static` 的相应通道。 |
 | 任务计划信息 | `plan_times_s [N,4]`；`phase [N,4]`、`warehouse [N,2]`；`pool_share [N,2]`、`pool_index [2]`；`edge_index [2,M]`、`relation [M,2]`、`matrices [8,N,N]` | `shared.plan_h [N,5]` 的前四列依次为计划开始、完成、历时、加工时长，第五列为释放时间，单位均为小时。`bmstgn` 保留 `phase`、`warehouse_index`、`pool_share`、`pool_index`；依赖边由 `shared.edge_index` 和 `bmstgn.edge_type` 表示。八类关系矩阵在对比模型中体现为节点关系特征、逐边关系特征及稀疏邻接，发布包不另存稠密矩阵。 |
-| 制造系统静态信息 | `equipment [R,5]`、`warehouses [W,3]`、`global_values [5]` | `bmstgn` 的 `equipment_kind`、`equipment_group`、`resource_numeric [R,6]` 表示设备类别、分组和属性；`warehouse_kind`、`warehouse_group`、`warehouse_capacity [W,1]` 表示仓库类别、分组和容量；`site [5]` 为系统公共属性。对比模型使用 `comparison.site_static`。 |
-| 任务执行信息 | `stage [T,N,4,17]`、`delivered [T,N]`、`request_ms [T,N]` | 四个阶段依次为装料、加工、卸料和接收。`bmstgn.stage [T,N,4,62]` 存放阶段数值及掩码，`status`、`operation` 分别保存状态和工序索引。已交付量与运输请求的时间信息位于 `bmstgn.logistics`，对比模型从 `comparison.local` 读取。已发生的任务开始和完成时间保存在 `shared.start_ms`、`shared.finish_ms`；未发生时为 NaN。 |
-| 制造系统动态信息 | `equipment [T,R,5]`、`warehouses [T,W,3]`、`transport_counts [T,2]`、`times_s [T]` | `bmstgn.equipment [T,R,9]` 表示设备运行、阻塞、队列和运输等待等状态，`bmstgn.warehouse [T,W,6]` 表示仓储占用及有效性，`logistics` 含运输计数，`calendar [T,3]` 表示日历位置。对比模型使用 `comparison.common`。第 `k` 帧对应 `1800 × k` 秒。 |
+| 制造系统静态信息 | `equipment [R,5]`、`warehouses [W,3]`、`global_values [5]` | `bmstgn` 的 `equipment_kind`、`equipment_group`、`resource_numeric [R,6]` 表示设备类别、分组和属性；`warehouse_kind`、`warehouse_group`、`warehouse_capacity [W,1]` 表示仓库类别、分组和货位容量；`site [5]` 为系统公共属性。对比模型使用 `comparison.site_static`。 |
+| 任务执行信息 | `stage [T,N,4,17]`、`delivered [T,N]`、`request_ms [T,N]` | 四个阶段依次为装料、加工、卸料和接收。`bmstgn.stage [T,N,4,62]` 存放已完成组焊口数、累计夹紧次数等阶段数值及掩码，`status`、`operation` 分别保存状态和工序索引。已交付量与运输请求的时间信息位于 `bmstgn.logistics`，对比模型从 `comparison.local` 读取。已发生的任务开始和完成时间保存在 `shared.start_ms`、`shared.finish_ms`；未发生时为 NaN。 |
+| 制造系统动态信息 | `equipment [T,R,5]`、`warehouses [T,W,3]`、`transport_counts [T,2]`、`times_s [T]` | `bmstgn.equipment [T,R,9]` 表示设备运行、阻塞、队列和运输等待等状态，`bmstgn.warehouse [T,W,6]` 表示货位占用、预留及相应的有效性标记，`logistics` 含运输计数，`calendar [T,3]` 表示日历位置。对比模型使用 `comparison.common`。第 `k` 帧对应 `1800 × k` 秒。 |
 
 ## 历史 TG 与 BT
 
 附表 1 表后的 `history [T,M,3]` 包含历史 TG、固定标记和原始 TG。发布包在 `shared.observed_tg`、`shared.fixed` 中保留前两项；`bmstgn.edge_extra [T,M,5]` 依次存放原始 TG 的数值编码、候选 BT 归属、确认 BT 归属、TG 历史差分和原始 TG 历史差分。附表中候选及确认 BT 按任务保存为 `[T,N]`，这里的归属按边表示，即该边前序是否为相应 BT。对比模型从 `comparison.edge_dynamic` 读取历史边特征。
 
 `edge_index[0]` 为前序任务，`edge_index[1]` 为后继任务。节点编号从 0 开始，各模型使用相同边序。历史差分使用该帧及其前一帧；预测只取起点及此前可用的信息。
-
-## CP002 示例
-
-CP002 含 48 个任务、102 条依赖边、20 台设备和 10 个仓库。以下按附表 1 的业务单位说明；NPZ 中部分数值已作单位变换和编码。
-
-- **工艺与材料**：T001 共 6 件，厚 8 mm，切割路径 39,469.6 mm，穿孔 8 次，材料为 Q355，输入质量为 220,038 g。
-- **计划与关联**：T001 的计划开始和完成时间分别为 1,186.049 s、10,832.543 s，计划历时为 9,646.494 s，计划加工时长为 7,680.214 s。四阶段设备索引为 `[1,8,9,9]`，仓库索引为 `[2,6]`，轻、重运输份额为 `[1,0]`。
-- **24 h 状态**：第 48 帧，T010 处于加工阶段，状态为 running，工序码为 9，已完成 5 件、13 个接口和 33 次夹紧。成品仓容量为 4,096 槽，该帧占用 3 槽、预留 0 槽。
-- **历史边**：T001 → T003 为设备次序边。第 48 帧，该边的历史 TG 为 1.5193 h，固定标记为 1。
-
-可在仓库根目录直接读取最后一个示例：
-
-```python
-import numpy as np
-
-with np.load("data/train/CP002/shared.npz", allow_pickle=False) as case:
-    source, target = case["edge_index"]
-    edge = np.flatnonzero((source == 0) & (target == 2)).item()
-    print(round(float(case["observed_tg"][48, edge]), 4), int(case["fixed"][48, edge]))
-```
 
 ## 文件与目标
 

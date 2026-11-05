@@ -9,13 +9,13 @@ BMSTGN 根据任务图和最近 10 帧观测，预测未来 10 帧各有向边�
 ```powershell
 python -m pip install -r requirements.txt
 python run.py check
-python run.py predict --case CP005 --origin 9 --device cpu
+python run.py predict --device cpu
 python run.py evaluate --model bmstgn --split test --output results/bmstgn.json
 ```
 
-`check` 校验发布文件，并用一个验证窗口运行所有模型。预测结果形状为 `[批次, 10, 边数]`，单位为小时。终端示例以秒显示第一条边的预测。通过 `predict --output results/prediction.npz` 可保存全部边的预测及对应边索引。计算设备默认自动选择，也可指定 `--device cpu` 或 `--device cuda`。
+`check` 校验发布文件，并用一个验证窗口运行所有模型。预测结果形状为 `[批次, 10, 边数]`，单位为小时。终端以秒显示第一条边的预测。通过 `predict --output results/prediction.npz` 可保存全部边的预测及对应边索引。计算设备默认自动选择，也可指定 `--device cpu` 或 `--device cuda`。
 
-[全部训练、评估与消融命令](COMMANDS.md) · [正文附表 1 与发布字段对照（含 CP002 示例）](data/README.md)
+[全部训练、评估与消融命令](COMMANDS.md) · [正文附表 1 与发布字段对照](data/README.md)
 
 ## 数据划分
 
