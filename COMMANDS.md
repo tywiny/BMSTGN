@@ -6,7 +6,7 @@
 
 ```powershell
 python run.py list
-python run.py predict --model bmstgn --split test --case CP005 --origin 9 --output results/CP005.npz
+python run.py predict --model bmstgn --split test --output results/prediction.npz
 python run.py evaluate --model bmstgn --split validation --output results/bmstgn_val.json
 python run.py evaluate --model bmstgn --split test --output results/bmstgn_test.json
 python run.py train --model bmstgn --output runs/bmstgn
