@@ -20,7 +20,7 @@ MASKS = {
     "-DP": "no-dp",
     "BSF-GCN": "gcn",
     "-PDS": "zero-pds",
-    "-DGR-node": "no-node-update",
+    "-DGR": "no-node-update",
     "-Bridge": "mean-bridge",
     "-CM": "mean-cm",
 }
@@ -84,7 +84,10 @@ class Predictor:
         if weights is not None:
             checkpoint = read_state(weights)
             if "state_dict" in checkpoint:
-                if checkpoint.get("method") != method or checkpoint.get("mask") != mask:
+                saved_mask = checkpoint.get("mask")
+                if saved_mask == "-DGR-node":
+                    saved_mask = "-DGR"
+                if checkpoint.get("method") != method or saved_mask != mask:
                     raise ValueError(
                         "Checkpoint model or ablation differs from the requested configuration"
                     )
@@ -566,7 +569,7 @@ def main():
     sub.add_parser("list")
     check = sub.add_parser("check")
     check.add_argument("--device", default="cpu", choices=["auto", "cpu", "cuda"])
-    for name in ("predict", "evaluate", "train"):
+    for name in ("predict", "evaluate", "evaluate-paths", "train"):
         cmd = sub.add_parser(name)
         cmd.add_argument("--model", choices=METHODS, default="bmstgn")
         cmd.add_argument("--ablation", choices=MASKS, default="full")
@@ -585,9 +588,11 @@ def main():
         if name == "predict":
             cmd.add_argument("--case")
             cmd.add_argument("--origin", type=int)
-        if name == "evaluate":
+        if name in ("evaluate", "evaluate-paths"):
             cmd.add_argument("--bootstrap-samples", type=int, default=20000)
             cmd.add_argument("--bootstrap-seed", type=int, default=20261026)
+        if name == "evaluate-paths":
+            cmd.add_argument("--cohort-only", action="store_true")
     args = parser.parse_args()
     if args.command == "list":
         print("\n".join(METHODS))
@@ -619,11 +624,20 @@ def main():
             parser.error("Epochs must be 1..40")
         train(args, device)
         return
-    predictor = Predictor(args.model, args.ablation, device, weights=args.weights)
-    if args.command == "evaluate":
+    predictor = (
+        None
+        if getattr(args, "cohort_only", False)
+        else Predictor(args.model, args.ablation, device, weights=args.weights)
+    )
+    if args.command in ("evaluate", "evaluate-paths"):
         if args.bootstrap_samples < 1 or args.bootstrap_seed < 0:
             parser.error("Bootstrap samples must be positive and its seed nonnegative")
-        result = evaluate(
+        evaluator = evaluate
+        if args.command == "evaluate-paths":
+            from path_metrics import evaluate_paths
+
+            evaluator = evaluate_paths
+        result = evaluator(
             predictor,
             args.data,
             args.split,

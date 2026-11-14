@@ -36,6 +36,7 @@ python run.py evaluate --model bmstgn --split test --output results/bmstgn.json
 | `rollout.py` | GCN–GRU + rollout 与计划递推 |
 | `data.py` | 按案例和窗口读取模型输入 |
 | `metrics.py` | 瓶颈任务（BT）身份与迁移评分、95% 置信区间 |
+| `path_metrics.py` | 关键路径身份与迁移评分、95% 置信区间 |
 | `run.py` | 训练、预测、评估与 Persistence |
 | `weights/` | 14 份用于预测和评估的模型权重，以及 GCN–GRU 的训练集归一化参数 |
 | `data/` | 案例张量、目标和划分清单 |
@@ -47,3 +48,11 @@ python run.py evaluate --model bmstgn --split test --output results/bmstgn.json
 `window_accuracy` 统计发生 BT 变化的有效窗口中十步身份全部正确的比例。`final_accuracy` 统计提前十步对末次变化后最终 BT 身份的命中率。`process_f1_d0`、`final_f1_d0` 分别对应过程迁移和末次迁移的同帧 F1；`d1` 允许偏差一步。准确率、精确率、召回率及 F1 的单位为 %，完整 JSON 保留计数。
 
 `confidence_intervals` 保存点估计 `estimate`、95% 置信区间下界 `lower`、上界 `upper` 和单位 `unit`。区间在固定模型权重下，以完整计划为单位重采样 20,000 次，取 2.5% 和 97.5% 分位数；各模型使用相同重采样。TG 指标按计划等权平均，准确率和 F1 按重采样后的计数汇总计算。
+
+## 关键路径评价
+
+`python run.py evaluate-paths --split test` 评价最终路径至少含 20 个任务节点、且参考路径发生过变化的非终点任务。路径按完整有序节点序列比较。
+
+`global_change_accuracy` 为图内发生 BT 变化时目标路径十步全部正确的比例；`path_change_accuracy` 进一步限定目标路径自身发生变化。两项均要求未来十步参考路径完整。`final_path_accuracy` 评价末次路径迁移前十步起报的最终路径身份；`final_path_f1_d0`、`final_path_f1_d1` 评价完整窗口中末次路径迁移，分别采用同帧和偏差一步的容差。末次参考迁移后的路径须等于最终路径并保持不变，预测事件的迁移前后完整路径均须匹配。
+
+`cohort` 返回目标数及目标与窗口组合数，`by_case` 返回逐计划计数。评价直接使用现有数据文件，准确率和 F1 的单位为 %；95% 置信区间按完整计划重采样计算。

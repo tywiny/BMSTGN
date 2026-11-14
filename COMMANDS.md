@@ -80,11 +80,11 @@ python run.py evaluate --ablation=-PDS --split test
 python run.py train --ablation=-PDS --output runs/no_pds
 ```
 
-### -DGR-node
+### -DGR
 
 ```powershell
-python run.py evaluate --ablation=-DGR-node --split test
-python run.py train --ablation=-DGR-node --output runs/no_dgr_node
+python run.py evaluate --ablation=-DGR --split test
+python run.py train --ablation=-DGR --output runs/no_dgr
 ```
 
 ### -Bridge
@@ -101,3 +101,15 @@ python run.py evaluate --ablation=-CM --split validation --output results/cm_val
 python run.py evaluate --ablation=-CM --split test --output results/cm_test.json
 python run.py train --ablation=-CM --seed 20261022 --output runs/no_cm
 ```
+
+## 关键路径
+
+```powershell
+python run.py evaluate-paths --split test --cohort-only
+python run.py evaluate-paths --model bmstgn --split test --output results/paths_bmstgn.json
+python run.py evaluate-paths --model graph_wavenet --split test --output results/paths_graph_wavenet.json
+python run.py evaluate-paths --model gcn_gru --split test --output results/paths_gcn_gru.json
+python run.py evaluate-paths --model persistence --split test --output results/paths_persistence.json
+```
+
+`--cohort-only` 仅统计评价目标和窗口。完整评价支持同一组模型、消融及 `--weights` 参数，输出准确率、F1（%）和 95% 置信区间。
