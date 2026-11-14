@@ -19,6 +19,8 @@ python run.py evaluate --model bmstgn --split test --output results/bmstgn.json
 
 ## 数据划分
 
+下表为默认划分。六组额外划分保存在 `data/partitions.json`，每组均按完整计划分为 36/12/12，复用同一套案例文件。
+
 | 集合 | 案例数 | 预测窗口数 |
 |---|---:|---:|
 | 训练 | 36 | 14,595 |
@@ -37,9 +39,12 @@ python run.py evaluate --model bmstgn --split test --output results/bmstgn.json
 | `data.py` | 按案例和窗口读取模型输入 |
 | `metrics.py` | 瓶颈任务（BT）身份与迁移评分、95% 置信区间 |
 | `path_metrics.py` | 关键路径身份与迁移评分、95% 置信区间 |
+| `analysis.py` | 前序数分组、预测步长分析及六组划分汇总 |
 | `run.py` | 训练、预测、评估与 Persistence |
 | `weights/` | 14 份用于预测和评估的模型权重，以及 GCN–GRU 的训练集归一化参数 |
 | `data/` | 案例张量、目标和划分清单 |
+
+`train --partition split_01` 至 `split_06` 支持 BMSTGN、Graph WaveNet 和 GCN–GRU 的额外划分训练。训练种子为 20261022，按验证集选择权重；GCN–GRU 的归一化参数仅从对应训练集拟合。完整训练与测试流程见 [运行命令](COMMANDS.md#六组额外划分)。
 
 ## 评估输出
 
@@ -56,3 +61,7 @@ python run.py evaluate --model bmstgn --split test --output results/bmstgn.json
 `global_change_accuracy` 为图内发生 BT 变化时目标路径十步全部正确的比例；`path_change_accuracy` 进一步限定目标路径自身发生变化。两项均要求未来十步参考路径完整。`final_path_accuracy` 评价末次路径迁移前十步起报的最终路径身份；`final_path_f1_d0`、`final_path_f1_d1` 评价完整窗口中末次路径迁移，分别采用同帧和偏差一步的容差。末次参考迁移后的路径须等于最终路径并保持不变，预测事件的迁移前后完整路径均须匹配。
 
 `cohort` 返回目标数及目标与窗口组合数，`by_case` 返回逐计划计数。评价直接使用现有数据文件，准确率和 F1 的单位为 %；95% 置信区间按完整计划重采样计算。
+
+## 分组与步长分析
+
+`python run.py analyze --model bmstgn --by all --split test --output results/analysis_bmstgn.json` 同时输出前序数分组和预测步长分析。前序数分为 2、3、≥4；步长为 1–10，每步 30 分钟。分析沿用现有身份和迁移评分，输出点估计、95% 置信区间及逐计划计数。TG 误差按计划等权平均，准确率和 F1 按计数汇总。

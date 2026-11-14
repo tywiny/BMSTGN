@@ -579,6 +579,10 @@ def score_task(
         duration_guard_rejected_optional_candidates=sum(k[0] == "optional" for k in rejected),
         neutral_alarm_times=[alarms[i][0] for i in neutral],
         FP_times=[alarms[i][0] for i in unused if i not in neutral],
+        matched_times=(
+            [(alarms[pi][0], required[qi]["time"]) for pi, qi in pairs]
+            + [(rest[pi][0], bonus_q[qi]["time"]) for pi, qi in bonus_pairs]
+        ),
         FN_times=(
             [q["time"] for ai, q in enumerate(required) if ai not in used_q and ai not in neutral_q]
             + [q["time"] for ai, q in enumerate(guarded) if ai not in used_guard]
@@ -642,7 +646,7 @@ class Accumulator:
         }
 
 
-def score_events_case(case, origins, prediction, paper=True):
+def score_events_case(case, origins, prediction, paper=True, analysis=None):
     labels = case.labels
     src, dst = case.shared["edge_index"]
     n = case.shared["plan_h"].shape[0]
@@ -653,6 +657,8 @@ def score_events_case(case, origins, prediction, paper=True):
     timeline = truth_timeline(actual, labels["bt_eligible"], multi)
     observed = labels["bt_start"][np.searchsorted(case.origins, origins)]
     p, _ = raw_bt(prediction, src, dst, n, observed)
+    if analysis is not None:
+        analysis.identities(actual, p, timeline, origins)
     frames = origins[:, None] + np.arange(1, p.shape[1] + 1)[None]
     a, tg = actual[frames], true_tg[frames]
     masks = {k: v[frames] for k, v in timeline.items()}
@@ -763,6 +769,8 @@ def score_events_case(case, origins, prediction, paper=True):
                 )
                 for mode in MODES:
                     add_counts(acc.counts[scope][mode][delta], scored[mode])
+                if analysis is not None:
+                    analysis.event(scope, delta, row, task, scored)
                 acc.details[scope][delta].update(
                     {
                         k: scored[k]

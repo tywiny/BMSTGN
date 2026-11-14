@@ -113,3 +113,55 @@ python run.py evaluate-paths --model persistence --split test --output results/p
 ```
 
 `--cohort-only` 仅统计评价目标和窗口。完整评价支持同一组模型、消融及 `--weights` 参数，输出准确率、F1（%）和 95% 置信区间。
+
+## 六组额外划分
+
+`data/partitions.json` 保存 `split_01` 至 `split_06` 的计划编号。每组使用 36 个训练计划、12 个验证计划和 12 个测试计划，直接读取现有数据文件。三个模型均从头训练，种子为 `20261022`，批次为 32，训练 40 轮。
+
+在第 1、5、10、20、30、40 轮验证，依次按验证集过程迁移 F1（容差一步）最高、TG MAE 最低、轮次最早选择权重。GCN–GRU 在各组训练集上分别拟合归一化参数，并随权重保存。测试命令须加载对应划分的权重。
+
+运行全部 18 次训练和测试（PowerShell）：
+
+```powershell
+foreach ($partition in 'split_01','split_02','split_03','split_04','split_05','split_06') {
+    foreach ($model in 'bmstgn','graph_wavenet','gcn_gru') {
+        $run = "runs/cross_split/$partition/$model"
+        python run.py train --model $model --partition $partition --seed 20261022 --batch-size 32 --epochs 40 --output $run
+        if ($LASTEXITCODE -ne 0) { throw "Training failed: $partition / $model" }
+        python run.py evaluate --model $model --partition $partition --split test --weights "$run/model.pt" --output "$run/test.json"
+        if ($LASTEXITCODE -ne 0) { throw "Evaluation failed: $partition / $model" }
+    }
+}
+python run.py summarize-splits --input runs/cross_split --output results/cross_split_summary.json
+```
+
+单独运行一组：
+
+```powershell
+python run.py train --model bmstgn --partition split_01 --seed 20261022 --output runs/split_01_bmstgn
+python run.py evaluate --model bmstgn --partition split_01 --weights runs/split_01_bmstgn/model.pt --split test --output results/split_01_bmstgn.json
+```
+
+汇总输出六组结果的均值 `mean` 和样本标准差 `sd`。每次测试的 `confidence_intervals` 为计划级重采样得到的 95% 置信区间。训练输出目录须为新目录。
+
+## 前序数分组
+
+```powershell
+python run.py analyze --model bmstgn --by degree --split test --output results/degree_bmstgn.json
+python run.py analyze --model graph_wavenet --by degree --split test --output results/degree_graph_wavenet.json
+python run.py analyze --model gcn_gru --by degree --split test --output results/degree_gcn_gru.json
+```
+
+按直接前序数 2、3、≥4 分组，输出整窗口身份准确率、最终身份准确率，以及过程和末次迁移 F1（同帧、容差一步）。
+
+## 预测步长
+
+```powershell
+python run.py analyze --model bmstgn --by lead --split test --output results/lead_bmstgn.json
+python run.py analyze --model graph_wavenet --by lead --split test --output results/lead_graph_wavenet.json
+python run.py analyze --model gcn_gru --by lead --split test --output results/lead_gcn_gru.json
+```
+
+按 1–10 步（0.5–5 小时）统计 TG 误差、变化窗口内该步身份准确率、过程和末次迁移时的身份准确率，以及同帧迁移 F1。F1 中的 TP 归入匹配步、FP 归入预测步、FN 归入参考事件步。
+
+`--by all` 一次完成两类分析。`analyze` 同样支持 `--ablation`、`--partition` 和 `--weights`。`records` 中 TG 误差单位为秒，准确率和 F1 单位为 %；`lower`、`upper` 为以完整计划重采样 20,000 次所得的 95% 置信区间。输出文件仅写入指定的本地目录。

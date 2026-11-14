@@ -8,6 +8,34 @@ import torch
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 HISTORY = HORIZON = 10
+PARTITIONS = ("original",) + tuple(f"split_{i:02d}" for i in range(1, 7))
+
+
+class Partition:
+    def __init__(self, root=DATA, name="original"):
+        self.root, self.name = Path(root), name
+        original = splits(self.root)
+        self.locations = {case: group for group, cases in original.items() for case in cases}
+        self.seed = 20261022
+        if name == "original":
+            self.groups = original
+        else:
+            config = json.loads((self.root / "partitions.json").read_text(encoding="utf8"))
+            if name not in config["partitions"]:
+                raise ValueError("Unknown data partition")
+            self.groups = config["partitions"][name]
+            self.seed = int(config["training_seed"])
+        groups = [self.groups[key] for key in ("train", "validation", "test")]
+        cases = [case for group in groups for case in group]
+        if len(cases) != len(set(cases)) or set(cases) != set(self.locations):
+            raise ValueError("Partition must assign every case exactly once")
+        if name != "original" and list(map(len, groups)) != [36, 12, 12]:
+            raise ValueError("Expected 36 training, 12 validation and 12 test cases")
+
+    def folder(self, group, case_id):
+        if case_id not in self.groups[group]:
+            raise ValueError("Case is outside selected partition and split")
+        return self.root / self.locations[case_id] / case_id
 
 
 def read_arrays(path, keys=None):
@@ -69,7 +97,11 @@ class NumericFields(dict):
 
 class Case:
     def __init__(self, root, split, case_id):
-        self.folder = Path(root) / split / case_id
+        self.folder = (
+            root.folder(split, case_id)
+            if isinstance(root, Partition)
+            else Path(root) / split / case_id
+        )
         self.case_id = case_id
         self.split = split
         self.origins = self.shared["origins"]
@@ -244,6 +276,8 @@ class Case:
 
 
 def splits(root=DATA):
+    if isinstance(root, Partition):
+        return root.groups
     groups = json.loads((Path(root) / "splits.json").read_text(encoding="utf8"))
     ids = [i for group in groups.values() for i in group]
     if len(set(ids)) != len(ids):

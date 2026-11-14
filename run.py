@@ -8,10 +8,10 @@ import random
 import numpy as np
 import torch
 from torch.nn import functional as F
-from data import Case, DATA, ROOT, read_arrays, splits, tensor
+from data import Case, DATA, ROOT, PARTITIONS, Partition, read_arrays, splits, tensor
 from bmstgn import BMSTGN
 from baselines import ComparisonModel, PROFILES
-from rollout import DurationGCNGRU, RolloutInputs, inverse, schedule, state
+from rollout import DurationGCNGRU, RolloutInputs, fit_normalization, inverse, schedule, state
 from metrics import Accumulator, bootstrap_intervals, score_events_case
 
 MASKS = {
@@ -61,7 +61,7 @@ def read_state(path):
 
 
 class Predictor:
-    def __init__(self, method, mask, device, training=False, weights=None):
+    def __init__(self, method, mask, device, training=False, weights=None, partition="original"):
         self.method, self.mask, self.device = method, mask, device
         self.rollouts = {}
         self.norm = None
@@ -91,9 +91,21 @@ class Predictor:
                     raise ValueError(
                         "Checkpoint model or ablation differs from the requested configuration"
                     )
+                if checkpoint.get("partition", "original") != partition:
+                    raise ValueError("Checkpoint belongs to a different data partition")
+                if method == "gcn_gru":
+                    normalization = checkpoint.get("normalization")
+                    if normalization is None and partition != "original":
+                        raise ValueError("Checkpoint must include training-set normalization")
+                    if normalization is not None:
+                        self.norm = {key: tensor(value, device) for key, value in normalization.items()}
                 checkpoint = checkpoint["state_dict"]
+            elif partition != "original":
+                raise ValueError("Additional partitions require a checkpoint with partition metadata")
             self.model.load_state_dict(checkpoint, strict=True)
         elif not training:
+            if partition != "original":
+                raise ValueError("Train a separate checkpoint for this data partition")
             stem = "bmstgn_" + MASKS[mask] if mask != "full" else method
             self.model.load_state_dict(read_state(WEIGHTS / (stem + ".pt")), strict=True)
         self.model.to(device).train(training)
@@ -390,7 +402,7 @@ def loss_denominators(case, batch_size):
     return totals
 
 
-def training_schedule(cases, method, seed, epoch, batch_size, sequence_rng):
+def training_schedule(cases, method, seed, epoch, batch_size, sequence_rng, grouped=False):
     if method == "bmstgn":
         rng = np.random.default_rng(seed + epoch)
         jobs = []
@@ -402,7 +414,11 @@ def training_schedule(cases, method, seed, epoch, batch_size, sequence_rng):
             )
         rng.shuffle(jobs)
         return jobs
-    rng = sequence_rng if method == "gcn_gru" else np.random.default_rng(seed + epoch * 104729)
+    rng = (
+        sequence_rng
+        if method == "gcn_gru" and not grouped
+        else np.random.default_rng(seed + epoch * 104729)
+    )
     ids = list(cases)
     rng.shuffle(ids)
     jobs = []
@@ -415,7 +431,12 @@ def training_schedule(cases, method, seed, epoch, batch_size, sequence_rng):
 
 def train(args, device):
     method = args.model
-    seed = args.seed if args.seed is not None else SEEDS[method]
+    partition = getattr(args.data, "name", "original")
+    cross = partition != "original"
+    default_seed = args.data.seed if cross else SEEDS[method]
+    seed = args.seed if args.seed is not None else default_seed
+    if cross and method not in ("bmstgn", "graph_wavenet", "gcn_gru"):
+        raise ValueError("Additional partitions support BMSTGN, Graph WaveNet and GCN-GRU")
     if method in RULES:
         raise ValueError("Use evaluate for this parameter-free model")
     torch.manual_seed(seed)
@@ -427,6 +448,10 @@ def train(args, device):
     output.mkdir(parents=True, exist_ok=False)
     bm = method == "bmstgn"
     duration = method == "gcn_gru"
+    if cross and duration:
+        predictor.norm = {
+            key: tensor(value, device) for key, value in fit_normalization(args.data).items()
+        }
     optimizer = torch.optim.AdamW(
         predictor.model.parameters(),
         lr=3e-4 if duration else 5e-4,
@@ -447,7 +472,7 @@ def train(args, device):
     skipped = 0
     for epoch in range(1, args.epochs + 1):
         predictor.model.train()
-        jobs = training_schedule(cases, method, seed, epoch, args.batch_size, rng)
+        jobs = training_schedule(cases, method, seed, epoch, args.batch_size, rng, grouped=cross)
         loss_sum = 0.0
         for cid, origins in jobs:
             step += 1
@@ -513,21 +538,35 @@ def train(args, device):
             seed=seed,
             state_dict=predictor.model.state_dict(),
         )
-        if bm:
+        payload["partition"] = partition
+        if cross:
+            payload["training_cases"] = splits(args.data)["train"]
+        if duration:
+            payload["normalization"] = {key: value.cpu() for key, value in predictor.norm.items()}
+        if cross and epoch not in (1, 5, 10, 20, 30, 40, args.epochs):
+            print(json.dumps(dict(epoch=epoch, loss=loss_sum / len(jobs))), flush=True)
+            continue
+        if bm and not cross:
             atomic_save(payload, output / "model.pt")
             print(json.dumps(dict(epoch=epoch, loss=loss_sum / len(jobs))), flush=True)
         else:
             result = evaluate(
-                predictor, args.data, "validation", args.batch_size, events=duration, paper=False
+                predictor, args.data, "validation", args.batch_size,
+                events=duration or cross, paper=False,
             )
-            key = (
-                (result["process_f1_d1"], result["process_f1_d0"], -result["mae_s"])
-                if duration
-                else (-result["mae_s"],)
-            )
+            if cross:
+                key = (result["process_f1_d1"], -result["mae_s"], -epoch)
+            elif duration:
+                key = (result["process_f1_d1"], result["process_f1_d0"], -result["mae_s"])
+            else:
+                key = (-result["mae_s"],)
             if best is None or key > best:
                 best = key
                 best_epoch = epoch
+                if cross:
+                    payload["validation_selection"] = dict(
+                        process_f1_d1=result["process_f1_d1"], mae_s=result["mae_s"], epoch=epoch
+                    )
                 atomic_save(payload, output / "model.pt")
             print(
                 json.dumps(
@@ -540,9 +579,10 @@ def train(args, device):
                 ),
                 flush=True,
             )
-            if (duration and epoch >= 15 and epoch - best_epoch >= 10) or (
+            stop = (duration and epoch >= 15 and epoch - best_epoch >= 10) or (
                 not duration and epoch - best_epoch >= 8
-            ):
+            )
+            if not cross and stop:
                 break
 
 
@@ -569,12 +609,16 @@ def main():
     sub.add_parser("list")
     check = sub.add_parser("check")
     check.add_argument("--device", default="cpu", choices=["auto", "cpu", "cuda"])
-    for name in ("predict", "evaluate", "evaluate-paths", "train"):
+    summary = sub.add_parser("summarize-splits")
+    summary.add_argument("--input", type=Path, required=True)
+    summary.add_argument("--output", type=Path, required=True)
+    for name in ("predict", "evaluate", "evaluate-paths", "analyze", "train"):
         cmd = sub.add_parser(name)
         cmd.add_argument("--model", choices=METHODS, default="bmstgn")
         cmd.add_argument("--ablation", choices=MASKS, default="full")
         cmd.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
         cmd.add_argument("--data", type=Path, default=DATA)
+        cmd.add_argument("--partition", choices=PARTITIONS, default="original")
         if name != "predict":
             cmd.add_argument("--batch-size", type=int, default=32)
         if name == "train":
@@ -588,15 +632,26 @@ def main():
         if name == "predict":
             cmd.add_argument("--case")
             cmd.add_argument("--origin", type=int)
-        if name in ("evaluate", "evaluate-paths"):
+        if name in ("evaluate", "evaluate-paths", "analyze"):
             cmd.add_argument("--bootstrap-samples", type=int, default=20000)
             cmd.add_argument("--bootstrap-seed", type=int, default=20261026)
         if name == "evaluate-paths":
             cmd.add_argument("--cohort-only", action="store_true")
+        if name == "analyze":
+            cmd.add_argument("--by", choices=["degree", "lead", "all"], default="all")
     args = parser.parse_args()
     if args.command == "list":
         print("\n".join(METHODS))
         print("\n".join(list(MASKS)[1:]))
+        return
+    if args.command == "summarize-splits":
+        from analysis import summarize_splits
+
+        result = summarize_splits(args.input)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with args.output.open("x", encoding="utf8") as stream:
+            json.dump(result, stream, indent=2, allow_nan=False)
+        print(json.dumps(result, indent=2))
         return
     device = resolve_device(args.device)
     if args.command == "check":
@@ -619,6 +674,7 @@ def main():
         return
     if getattr(args, "batch_size", 1) < 1:
         parser.error("Batch size must be positive")
+    args.data = Partition(args.data, args.partition)
     if args.command == "train":
         if not 1 <= args.epochs <= 40:
             parser.error("Epochs must be 1..40")
@@ -627,16 +683,22 @@ def main():
     predictor = (
         None
         if getattr(args, "cohort_only", False)
-        else Predictor(args.model, args.ablation, device, weights=args.weights)
+        else Predictor(args.model, args.ablation, device, weights=args.weights, partition=args.partition)
     )
-    if args.command in ("evaluate", "evaluate-paths"):
+    if args.command in ("evaluate", "evaluate-paths", "analyze"):
         if args.bootstrap_samples < 1 or args.bootstrap_seed < 0:
             parser.error("Bootstrap samples must be positive and its seed nonnegative")
         evaluator = evaluate
+        extra = {}
         if args.command == "evaluate-paths":
             from path_metrics import evaluate_paths
 
             evaluator = evaluate_paths
+        if args.command == "analyze":
+            from analysis import evaluate_breakdown
+
+            evaluator = evaluate_breakdown
+            extra["by"] = args.by
         result = evaluator(
             predictor,
             args.data,
@@ -644,7 +706,9 @@ def main():
             args.batch_size,
             bootstrap_samples=args.bootstrap_samples,
             bootstrap_seed=args.bootstrap_seed,
+            **extra,
         )
+        result["partition"] = args.partition
         if args.output is not None:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("x", encoding="utf8") as f:

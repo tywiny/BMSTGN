@@ -234,14 +234,12 @@ class RolloutInputs:
         ).astype(np.float32)
         self.incident_dynamic = np.concatenate(dynamics, -1)
 
-    def batch(self, origins, device, norm):
-        ix = np.asarray(origins)[:, None] + np.arange(-9, 1)
+    def dynamic(self, ix):
         a = self.a
-        t, n = ix.size, self.n
         eq = self.eq[ix][:, :, self.eq_id] * self.eq_present[None, None, :, :, None]
         wh = self.wh[ix][:, :, self.wh_id] * self.wh_present[None, None, :, :, None]
-        shape = (*ix.shape, n)
-        x = np.concatenate(
+        shape = (*ix.shape, self.n)
+        return np.concatenate(
             (
                 a["local"][ix],
                 eq.reshape(*shape, -1),
@@ -252,6 +250,10 @@ class RolloutInputs:
             ),
             -1,
         )
+
+    def batch(self, origins, device, norm):
+        ix = np.asarray(origins)[:, None] + np.arange(-9, 1)
+        x = self.dynamic(ix)
         x = torch.as_tensor(x, device=device)
         stat = torch.as_tensor(self.task_input_static, device=device)
         return dict(
@@ -259,6 +261,38 @@ class RolloutInputs:
             static=(stat - norm["static_mean"]) / norm["static_scale"],
             state=state(self, origins, device),
         )
+
+
+def fit_normalization(root):
+    from data import Case, splits
+
+    moments = {name: [None, None, 0] for name in ("static", "dynamic")}
+
+    def update(name, array):
+        rows = array.reshape(-1, array.shape[-1])
+        for start in range(0, len(rows), 8192):
+            values = np.asarray(rows[start : start + 8192], dtype=np.float64)
+            total, square, count = moments[name]
+            summed, squared = values.sum(0), np.square(values).sum(0)
+            moments[name] = [
+                summed if total is None else total + summed,
+                squared if square is None else square + squared,
+                count + len(values),
+            ]
+
+    for case_id in splits(root)["train"]:
+        case = RolloutInputs(Case(root, "train", case_id))
+        update("static", case.task_input_static)
+        for start in range(0, len(case.a["local"]), 64):
+            frames = np.arange(start, min(start + 64, len(case.a["local"])))
+            update("dynamic", case.dynamic(frames[None]))
+    result = {}
+    for name, (total, square, count) in moments.items():
+        mean = total / count
+        scale = np.maximum(np.sqrt(np.maximum(square / count - mean**2, 0)), 0.05)
+        result[name + "_mean"] = mean.astype(np.float32)
+        result[name + "_scale"] = scale.astype(np.float32)
+    return result
 
 
 class DurationGCNGRU(nn.Module):

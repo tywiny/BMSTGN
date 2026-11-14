@@ -1,6 +1,6 @@
 # 数据集与算法输入
 
-数据集含 60 个生产计划，共 6,518 个任务节点、13,511 条有向依赖边。单个计划含 48–160 个任务、94–330 条边。每个计划只属于一个集合。
+数据集含 60 个生产计划，共 6,518 个任务节点、13,511 条有向依赖边。单个计划含 48–160 个任务、94–330 条边。在每个划分方案内，每个计划只属于一个集合。下表为默认划分。
 
 | 集合 | 计划数 | 预测窗口数 |
 |---|---:|---:|
@@ -30,11 +30,11 @@
 
 ## 文件与目标
 
-`splits.json` 给出各集合的计划编号。每个计划的文件位于 `集合/计划编号/`。
+`splits.json` 给出默认划分的计划编号；`partitions.json` 给出六组额外划分及训练种子。每个计划的文件位于默认的 `集合/计划编号/`，切换划分时按清单读取对应文件。
 
 | 文件 | 内容 |
 |---|---|
 | `shared.npz` | 合法窗口起点 `origins`、边索引、计划时间、历史 TG 及起点状态所需的时间边界。 |
 | `bmstgn.npz` | BMSTGN 及消融模型读取的任务、资源和边特征。 |
 | `comparison.npz` | 对比模型共享的节点特征 `static [N,183]`、`local [T,N,356]`，边特征 `edge_static [M,18]`、`edge_dynamic [T,M,14]`，系统特征 `site_static [550]`、`common [T,609]`，以及传播邻接 `spatial_edge_index`、`spatial_edge_weight`。 |
-| `targets.npz` | `tg_s` 为逐帧逐边的目标 TG（秒），`active` 为有效监督位置。`bt_start`、`bt_eligible`、`final_parent`、`freeze_at` 用于评分。`date_h` 为逐帧参考完成时刻（小时），仅供 GCN–GRU 训练使用。 |
+| `targets.npz` | `tg_s` 为逐帧逐边的目标 TG（秒），`active` 为有效监督位置。`bt_start`、`bt_eligible`、`final_parent`、`freeze_at` 用于评分。`date_h` 为逐帧参考完成时刻（小时），供各划分下的 GCN–GRU 训练使用。 |
