@@ -1,6 +1,6 @@
 # 运行命令
 
-以下命令在仓库根目录执行。`evaluate` 默认加载随包的已训练权重。`train` 按固定随机种子初始化模型，从头训练并将结果写入新目录。可用 `--seed 42` 指定其他种子。默认批次为 32，训练上限为 40 轮。
+以下命令在仓库根目录执行。`evaluate` 默认加载随包的已训练权重，输出准确率/F1（%）、TG 误差（秒）及 95% 置信区间。`train` 从头训练并将结果写入新目录；BMSTGN 和各消融的默认训练种子为 `20261022`，可用 `--seed` 指定。默认批次为 32，训练上限为 40 轮。
 
 ## BMSTGN
 
@@ -92,4 +92,12 @@ python run.py train --ablation=-DGR-node --output runs/no_dgr_node
 ```powershell
 python run.py evaluate --ablation=-Bridge --split test
 python run.py train --ablation=-Bridge --output runs/no_bridge
+```
+
+### -CM
+
+```powershell
+python run.py evaluate --ablation=-CM --split validation --output results/cm_val.json
+python run.py evaluate --ablation=-CM --split test --output results/cm_test.json
+python run.py train --ablation=-CM --seed 20261022 --output runs/no_cm
 ```

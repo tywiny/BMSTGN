@@ -32,6 +32,13 @@ def group_mean(value, index, groups, count=None):
     return total / count[:, None]
 
 
+def neighbor_mean(value, index, groups):
+    dtype = value.dtype
+    if dtype in (torch.float16, torch.bfloat16):
+        value = value.float()
+    return group_mean(value, index, groups).to(dtype)
+
+
 def group_softmax(score, index, groups):
     dtype = score.dtype
     score = score.float()
@@ -144,7 +151,9 @@ class GroupEncoders(nn.Module):
         )
         groups = (craft, plan, local, logistics)
         gate = self.static_gate(torch.cat(groups, -1)).sigmoid()
-        return self.static_fusion(torch.cat([v * gate[:, i : i + 1] for i, v in enumerate(groups)], -1))
+        return self.static_fusion(
+            torch.cat([v * gate[:, i : i + 1] for i, v in enumerate(groups)], -1)
+        )
 
     def forward(self, f, s, graph):
         b, t = f["edge"].shape[:2]
@@ -154,10 +163,18 @@ class GroupEncoders(nn.Module):
         )
         if self.ablation == "zero-pds":
             ec = torch.cat(
-                (self.equipment_kind(f["equipment_kind"]), self.equipment_group(f["equipment_group"])), -1
+                (
+                    self.equipment_kind(f["equipment_kind"]),
+                    self.equipment_group(f["equipment_group"]),
+                ),
+                -1,
             )
             wc = torch.cat(
-                (self.warehouse_kind(f["warehouse_kind"]), self.warehouse_group(f["warehouse_group"])), -1
+                (
+                    self.warehouse_kind(f["warehouse_kind"]),
+                    self.warehouse_group(f["warehouse_group"]),
+                ),
+                -1,
             )
             static = self.encode_static(craft, f, s, graph, ec, wc)
             edge = self.edge_init(self.edge_fact(f["edge"]))
@@ -167,23 +184,29 @@ class GroupEncoders(nn.Module):
         plan = self.plan(f["plan"])
         phase = self.stage_id.weight[None, None, None].expand(b, t, n, 4, 4)
         stage = self.stage(
-            torch.cat((f["stage"], self.status(f["status"]), self.operation(f["operation"]), phase), -1)
+            torch.cat(
+                (f["stage"], self.status(f["status"]), self.operation(f["operation"]), phase), -1
+            )
         )
         stage = self.stage_fusion(stage.flatten(-2))
         eq_categories = torch.cat(
-            (self.equipment_kind(f["equipment_kind"]), self.equipment_group(f["equipment_group"])), -1
+            (self.equipment_kind(f["equipment_kind"]), self.equipment_group(f["equipment_group"])),
+            -1,
         )
         equipment = self.equipment(
             torch.cat((f["equipment"], eq_categories[None, None].expand(b, t, -1, -1)), -1)
         )
         local_equipment = self.equipment_fusion(equipment[:, :, s["phase"]].flatten(-2))
         wh_categories = torch.cat(
-            (self.warehouse_kind(f["warehouse_kind"]), self.warehouse_group(f["warehouse_group"])), -1
+            (self.warehouse_kind(f["warehouse_kind"]), self.warehouse_group(f["warehouse_group"])),
+            -1,
         )
         warehouse = self.warehouse(
             torch.cat((f["warehouse"], wh_categories[None, None].expand(b, t, -1, -1)), -1)
         )
-        pool = torch.einsum("np,btpc->btnc", s["pool_share"].float(), equipment[:, :, s["pool_index"]])
+        pool = torch.einsum(
+            "np,btpc->btnc", s["pool_share"].float(), equipment[:, :, s["pool_index"]]
+        )
         logistics = self.logistics(
             torch.cat((warehouse[:, :, s["warehouse_index"]].flatten(-2), f["logistics"], pool), -1)
         )
@@ -221,6 +244,7 @@ class ProductionMechanism(nn.Module):
 
     def __init__(self):
         super().__init__()
+        self.mean = False
         self.score = nn.Sequential(nn.Linear(48, 24), nn.GELU(), nn.Linear(24, 1, bias=False))
         self.value = nn.Linear(112, 48)
         self.source = nn.Linear(112, 48)
@@ -240,10 +264,13 @@ class ProductionMechanism(nn.Module):
 
     def forward(self, static, nodes, edge, graph, static_terms=None):
         src, dst = graph.index
-        alpha = self.predecessor_weights(edge, graph)
         sv, ss, st = self.project_static(static) if static_terms is None else static_terms
         value = self.value(nodes) + sv[None, None]
-        predecessor = group_sum(alpha * value[:, :, src], dst, graph.nodes)
+        if self.mean:
+            predecessor = neighbor_mean(value[:, :, src], dst, graph.nodes)
+        else:
+            alpha = self.predecessor_weights(edge, graph)
+            predecessor = group_sum(alpha * value[:, :, src], dst, graph.nodes)
         source = self.source(nodes)[:, :, src] + ss[None, None, src]
         target = self.target(nodes)[:, :, dst] + st[None, None, dst]
         message = self.node_fusion(torch.cat((source, target, predecessor[:, :, src]), -1))
@@ -256,6 +283,7 @@ class EdgeScoreAttention(nn.Module):
 
     def __init__(self):
         super().__init__()
+        self.mean = False
         self.score = nn.Sequential(nn.Linear(48, 24), nn.GELU(), nn.Linear(24, 1, bias=False))
         self.value = nn.Linear(48, 48)
 
@@ -263,6 +291,8 @@ class EdgeScoreAttention(nn.Module):
         return group_softmax(self.score(edge)[:, :, key_index], query_index, edge.shape[2])
 
     def forward(self, edge, query_index, key_index):
+        if self.mean:
+            return neighbor_mean(self.value(edge)[:, :, key_index], query_index, edge.shape[2])
         weight = self.attention_weights(edge, query_index, key_index)
         return group_sum(weight * self.value(edge)[:, :, key_index], query_index, edge.shape[2])
 
@@ -271,6 +301,7 @@ class PackedEdgeAttention(nn.Module):
 
     def __init__(self):
         super().__init__()
+        self.mean = False
         self.query = nn.Linear(48, 48, bias=False)
         self.key = nn.Linear(48, 48, bias=False)
         self.value = nn.Linear(48, 48)
@@ -282,6 +313,8 @@ class PackedEdgeAttention(nn.Module):
         return group_softmax((q * k).sum(-1) / math.sqrt(12), query_index, e)
 
     def forward(self, edge, query_index, key_index):
+        if self.mean:
+            return neighbor_mean(self.value(edge)[:, :, key_index], query_index, edge.shape[2])
         b, t, e, _ = edge.shape
         weight = self.attention_weights(edge, query_index, key_index)
         value = self.value(edge).reshape(b, t, e, 4, 12)[:, :, key_index]
@@ -315,9 +348,11 @@ class GraphUpdate(nn.Module):
     def __init__(self, variant):
         super().__init__()
         self.variant = variant
-        self.gated = variant != "full"
+        self.gated = variant not in ("full", "mean-cm")
         if variant != "no-node-update":
-            self.node_gate = mlp(114 if variant == "no-dp" else 306, 160, 224 if self.gated else 112)
+            self.node_gate = mlp(
+                114 if variant == "no-dp" else 306, 160, 224 if self.gated else 112
+            )
             self.node_norm = LatentNorm(112)
         self.edge_gate = mlp(98 if variant == "no-dp" else 146, 96, 96 if self.gated else 48)
         self.edge_norm = LatentNorm(48)
@@ -413,8 +448,12 @@ class NodeGCNSpatial(nn.Module):
         projected = self.project_static(static) if static_terms is None else static_terms
         value = nodes + projected[None, None]
         adjacency = self.normalized_adjacency(graph, value)
-        value = self.dropout(F.gelu(self.gcn_first(torch.einsum("ij,btjc->btic", adjacency, value))))
-        nodes = self.node_norm(F.gelu(self.gcn_second(torch.einsum("ij,btjc->btic", adjacency, value))))
+        value = self.dropout(
+            F.gelu(self.gcn_first(torch.einsum("ij,btjc->btic", adjacency, value)))
+        )
+        nodes = self.node_norm(
+            F.gelu(self.gcn_second(torch.einsum("ij,btjc->btic", adjacency, value)))
+        )
         src, dst = graph.index
         edge = self.edge_norm(
             self.endpoint_head(torch.cat((nodes[:, :, src], nodes[:, :, dst], edge), -1))
@@ -463,14 +502,25 @@ def project_tg(raw, boundary, graph):
     dates = boundary.finish_h[:, src][:, None]
     score = raw.double()
     count = group_sum(observed.float()[..., None], dst, graph.nodes)[..., 0]
-    total = group_sum(torch.where(observed, score + dates, 0.0)[..., None], dst, graph.nodes)[..., 0]
+    total = group_sum(torch.where(observed, score + dates, 0.0)[..., None], dst, graph.nodes)[
+        ..., 0
+    ]
     common = (total / count.clamp_min(1))[..., dst]
     factual = torch.where(observed, common - dates, score)
     result = (factual - group_min(factual, dst, graph.nodes)[..., dst]).clamp_min(0.0)
     return torch.where(boundary.fixed[:, None], boundary.last_tg[:, None], result.to(raw.dtype))
 
 
-ABLATIONS = ("full", "no-pm", "no-dp", "gcn", "zero-pds", "no-node-update", "mean-bridge")
+ABLATIONS = (
+    "full",
+    "no-pm",
+    "no-dp",
+    "gcn",
+    "zero-pds",
+    "no-node-update",
+    "mean-bridge",
+    "mean-cm",
+)
 
 
 class WidePeerAttention(nn.Module):
@@ -599,6 +649,15 @@ class BMSTGN(nn.Module):
         self.readout = nn.Sequential(
             nn.Linear(width, hidden), nn.GELU(), nn.Linear(hidden, 1, bias=False)
         )
+        if ablation == "mean-cm":
+            for block in self.spatial:
+                for module in (block.pm, block.dp.original_up, block.dp.pm_up):
+                    module.mean = True
+                    del module.score
+                for module in (block.dp.original_peer, block.dp.pm_peer):
+                    module.mean = True
+                    del module.query
+                    del module.key
 
     def forward(self, batch):
         b = batch

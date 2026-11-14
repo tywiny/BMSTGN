@@ -12,7 +12,7 @@ from data import Case, DATA, ROOT, read_arrays, splits, tensor
 from bmstgn import BMSTGN
 from baselines import ComparisonModel, PROFILES
 from rollout import DurationGCNGRU, RolloutInputs, inverse, schedule, state
-from metrics import Accumulator, score_events_case
+from metrics import Accumulator, bootstrap_intervals, score_events_case
 
 MASKS = {
     "full": "full",
@@ -22,6 +22,7 @@ MASKS = {
     "-PDS": "zero-pds",
     "-DGR-node": "no-node-update",
     "-Bridge": "mean-bridge",
+    "-CM": "mean-cm",
 }
 METHODS = (
     "bmstgn",
@@ -35,7 +36,9 @@ METHODS = (
     "plan_cpm",
 )
 RULES = ("persistence", "plan_cpm")
-SEEDS = {k: (20261022 if k == "bmstgn" else 20261026 if k == "gcn_gru" else 20261023) for k in METHODS}
+SEEDS = {
+    k: (20261022 if k == "bmstgn" else 20261026 if k == "gcn_gru" else 20261023) for k in METHODS
+}
 WEIGHTS = ROOT / "weights"
 
 
@@ -101,7 +104,9 @@ class Predictor:
         if self.method == "persistence":
             case.windows(origins)
             return (
-                tensor(case.shared["observed_tg"][origins], self.device)[:, None].expand(-1, 10, -1),
+                tensor(case.shared["observed_tg"][origins], self.device)[:, None].expand(
+                    -1, 10, -1
+                ),
                 None,
             )
         if self.method in ("gcn_gru", "plan_cpm"):
@@ -133,12 +138,24 @@ class Predictor:
 
 
 def validate_prediction(p, case, origins):
-    if p.shape != (len(origins), 10, case.shared["edge_index"].shape[1]) or not torch.isfinite(p).all():
+    if (
+        p.shape != (len(origins), 10, case.shared["edge_index"].shape[1])
+        or not torch.isfinite(p).all()
+    ):
         raise ValueError(f"Invalid prediction in {case.case_id}")
 
 
 @torch.inference_mode()
-def evaluate(predictor, root, group, batch_size, events=True, paper=True):
+def evaluate(
+    predictor,
+    root,
+    group,
+    batch_size,
+    events=True,
+    paper=True,
+    bootstrap_samples=20000,
+    bootstrap_seed=20261026,
+):
     if predictor.model is not None:
         predictor.model.eval()
     total = Accumulator() if events else None
@@ -171,8 +188,15 @@ def evaluate(predictor, root, group, batch_size, events=True, paper=True):
             local_count += error.numel()
             if events:
                 pred.append(values.cpu().numpy())
+        event_metrics = {}
         if events:
-            total.merge(score_events_case(case, case.origins, np.concatenate(pred), paper=paper))
+            local_events = score_events_case(case, case.origins, np.concatenate(pred), paper=paper)
+            total.merge(local_events)
+            event_metrics["migration"] = local_events.finish()
+            for name in ("window", "final"):
+                for suffix in ("_correct", "_count"):
+                    key = name + suffix
+                    event_metrics[key] = local_events.identity[key]
         absolute += local_abs
         squared += local_square
         count += local_count
@@ -185,11 +209,15 @@ def evaluate(predictor, root, group, batch_size, events=True, paper=True):
                 rmse_s=math.sqrt(local_square / local_count) if local_count else None,
                 change_mae_s=changed_sum / changed_count if changed_count else None,
                 final_tg_mae_s=fact_sum / fact_count if fact_count else None,
+                **event_metrics,
             )
         )
     means = [k["mae_s"] for k in cases if k["count"]]
     report = dict(
         split=group,
+        model=predictor.method,
+        ablation=predictor.mask,
+        units=dict(tg_error="s", accuracy="%", precision="%", recall="%", f1="%"),
         cases=len(cases),
         windows=sum(k["windows"] for k in cases),
         mae_s=float(np.mean(means)),
@@ -213,9 +241,11 @@ def evaluate(predictor, root, group, batch_size, events=True, paper=True):
         for name in ("window", "final"):
             hit = total.identity[name + "_correct"]
             n = total.identity[name + "_count"]
-            report[name + "_accuracy"] = hit / n if n else None
+            report[name + "_accuracy"] = 100 * hit / n if n else None
             report[name + "_correct"] = hit
             report[name + "_count"] = n
+    if paper:
+        report.update(bootstrap_intervals(cases, report, group, bootstrap_samples, bootstrap_seed))
     return report
 
 
@@ -235,7 +265,9 @@ def forecast_loss(prediction, last_tg, graph, truth, mask):
         return torch.where(selected, values, 0.0).sum() / selected.sum().clamp_min(1)
 
     level = (
-        average(F.smooth_l1_loss(prediction * 3600, truth * 3600, beta=5.0, reduction="none"), valid)
+        average(
+            F.smooth_l1_loss(prediction * 3600, truth * 3600, beta=5.0, reduction="none"), valid
+        )
         / 100
     )
     before_prediction = torch.cat((last_tg[:, None], prediction[:, :-1]), 1)
@@ -293,7 +325,10 @@ def comparison_terms(prediction, last_tg, observed_valid, edge, truth, mask, nod
     delta_valid = valid & torch.cat((observed_valid[:, None].bool(), valid[:, :-1]), 1)
     delta = (
         F.smooth_l1_loss(
-            (prediction - previous_p) * 3600, (truth - previous_y) * 3600, beta=5.0, reduction="none"
+            (prediction - previous_p) * 3600,
+            (truth - previous_y) * 3600,
+            beta=5.0,
+            reduction="none",
         )
         / 100.0
     )
@@ -359,7 +394,8 @@ def training_schedule(cases, method, seed, epoch, batch_size, sequence_rng):
         for cid, case in cases.items():
             order = rng.permutation(len(case.origins))
             jobs.extend(
-                (cid, case.origins[order[i : i + batch_size]]) for i in range(0, len(order), batch_size)
+                (cid, case.origins[order[i : i + batch_size]])
+                for i in range(0, len(order), batch_size)
             )
         rng.shuffle(jobs)
         return jobs
@@ -436,7 +472,13 @@ def train(args, device):
                 else:
                     last = batch["last_tg"]
                     parts = comparison_terms(
-                        p, last, torch.isfinite(last), batch["edge_index"], y, mask, batch["x"].shape[2]
+                        p,
+                        last,
+                        torch.isfinite(last),
+                        batch["edge_index"],
+                        y,
+                        mask,
+                        batch["x"].shape[2],
                     )
                     loss = (
                         sum(
@@ -503,7 +545,9 @@ def train(args, device):
 
 def resolve_device(name):
     device = torch.device(
-        "cuda" if name == "auto" and torch.cuda.is_available() else "cpu" if name == "auto" else name
+        "cuda"
+        if name == "auto" and torch.cuda.is_available()
+        else "cpu" if name == "auto" else name
     )
     if device.type == "cuda":
         if not torch.cuda.is_available():
@@ -541,6 +585,9 @@ def main():
         if name == "predict":
             cmd.add_argument("--case")
             cmd.add_argument("--origin", type=int)
+        if name == "evaluate":
+            cmd.add_argument("--bootstrap-samples", type=int, default=20000)
+            cmd.add_argument("--bootstrap-seed", type=int, default=20261026)
     args = parser.parse_args()
     if args.command == "list":
         print("\n".join(METHODS))
@@ -574,13 +621,24 @@ def main():
         return
     predictor = Predictor(args.model, args.ablation, device, weights=args.weights)
     if args.command == "evaluate":
-        result = evaluate(predictor, args.data, args.split, args.batch_size)
+        if args.bootstrap_samples < 1 or args.bootstrap_seed < 0:
+            parser.error("Bootstrap samples must be positive and its seed nonnegative")
+        result = evaluate(
+            predictor,
+            args.data,
+            args.split,
+            args.batch_size,
+            bootstrap_samples=args.bootstrap_samples,
+            bootstrap_seed=args.bootstrap_seed,
+        )
         if args.output is not None:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("x", encoding="utf8") as f:
                 json.dump(result, f, indent=2, allow_nan=False)
         print(
-            json.dumps({k: v for k, v in result.items() if k not in ("migration", "by_case")}, indent=2)
+            json.dumps(
+                {k: v for k, v in result.items() if k not in ("migration", "by_case")}, indent=2
+            )
         )
     else:
         group = splits(args.data)[args.split]
@@ -588,7 +646,9 @@ def main():
         if cid not in group:
             parser.error("Case is outside selected split")
         c = Case(args.data, args.split, cid)
-        origins = np.array([args.origin if args.origin is not None else c.origins[0]], dtype=np.int64)
+        origins = np.array(
+            [args.origin if args.origin is not None else c.origins[0]], dtype=np.int64
+        )
         with torch.inference_mode():
             p, _ = predictor.forward(c, origins)
             validate_prediction(p, c, origins)

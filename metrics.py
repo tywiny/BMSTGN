@@ -115,9 +115,9 @@ def finish_counts(values):
     out = dict(values)
     tp, fp, fn = (out[k] for k in ("tp", "fp", "fn"))
     out.update(
-        precision=tp / max(tp + fp, 1),
-        recall=tp / max(tp + fn, 1),
-        f1=2 * tp / max(2 * tp + fp + fn, 1),
+        precision=100 * tp / max(tp + fp, 1),
+        recall=100 * tp / max(tp + fn, 1),
+        f1=200 * tp / max(2 * tp + fp + fn, 1),
         precision_denominator=tp + fp,
         recall_denominator=tp + fn,
         mean_signed_step=out["signed_steps"] / max(tp, 1),
@@ -127,6 +127,78 @@ def finish_counts(values):
     out["mean_signed_minutes"] = out["mean_signed_step"] * 30
     out["mean_absolute_minutes"] = out["mean_absolute_step"] * 30
     return out
+
+
+def metric_draws(rows, weights):
+    def ratio(numerator, denominator):
+        return np.divide(
+            numerator,
+            denominator,
+            out=np.full_like(numerator, np.nan, dtype=np.float64),
+            where=denominator > 0,
+        )
+
+    result = {}
+    for key in ("mae_s", "rmse_s", "change_mae_s", "final_tg_mae_s"):
+        values = np.array([row.get(key) for row in rows], dtype=np.float64)
+        valid = np.isfinite(values)
+        if valid.any():
+            result[key] = ratio(weights[:, valid] @ values[valid], weights[:, valid].sum(1))
+    counts = np.array([row["count"] for row in rows])
+    absolute = np.array([row["mae_s"] or 0.0 for row in rows]) * counts
+    squared = np.array([row["rmse_s"] or 0.0 for row in rows]) ** 2 * counts
+    result["micro_mae_s"] = ratio(weights @ absolute, weights @ counts)
+    result["micro_rmse_s"] = np.sqrt(ratio(weights @ squared, weights @ counts))
+    if "migration" in rows[0]:
+        for name in ("window", "final"):
+            hits = np.array([row[name + "_correct"] for row in rows])
+            count = np.array([row[name + "_count"] for row in rows])
+            result[name + "_accuracy"] = 100 * ratio(weights @ hits, weights @ count)
+        for prefix, scope in (("process", "full_process"), ("final", "final_migration")):
+            for delta in ("0", "1"):
+                counts = np.array(
+                    [
+                        [
+                            row["migration"][scope]["with_optional_bonus"][delta][k]
+                            for k in ("tp", "fp", "fn")
+                        ]
+                        for row in rows
+                    ]
+                )
+                tp, fp, fn = (weights @ counts).T
+                result[prefix + "_f1_d" + delta] = 200 * tp / np.maximum(2 * tp + fp + fn, 1)
+    return result
+
+
+def bootstrap_intervals(rows, estimates, split, repetitions=20000, seed=20261026):
+    if not rows or repetitions < 1:
+        raise ValueError("Bootstrap requires cases and a positive number of resamples")
+    seed += {"validation": 0, "test": 1, "train": 2}[split]
+    rng = np.random.default_rng(seed)
+    index = rng.integers(0, len(rows), size=(repetitions, len(rows)))
+    weights = np.zeros((repetitions, len(rows)), dtype=np.int64)
+    np.add.at(weights, (np.arange(repetitions)[:, None], index), 1)
+    intervals = {}
+    for key, draws in metric_draws(rows, weights).items():
+        finite = draws[np.isfinite(draws)]
+        lower, upper = np.quantile(finite, [0.025, 0.975]) if len(finite) else (None, None)
+        intervals[key] = dict(
+            estimate=estimates[key],
+            lower=float(lower) if lower is not None else None,
+            upper=float(upper) if upper is not None else None,
+            unit="s" if key.endswith("_s") else "%",
+            valid_resamples=len(finite),
+        )
+    return dict(
+        confidence=dict(
+            level=0.95,
+            method="plan-cluster percentile bootstrap",
+            repetitions=repetitions,
+            seed=seed,
+            plans=len(rows),
+        ),
+        confidence_intervals=intervals,
+    )
 
 
 def membership(values_h):
@@ -164,7 +236,10 @@ def scoring_questions(questions, actual, predicted, eligible, allowed, joint, so
                 old_side=[q["old_source"]],
             )
             for j, source in enumerate(sources):
-                if int(source) == q["old_source"] or not allowed[q["time"] : q["run_end"] + 1, j].all():
+                if (
+                    int(source) == q["old_source"]
+                    or not allowed[q["time"] : q["run_end"] + 1, j].all()
+                ):
                     continue
                 left = q["time"]
                 while (
@@ -213,7 +288,10 @@ def truth_questions(actual, previous_true, stable, allowed, origin_allowed, elig
                     continue
                 left = at
                 while (
-                    left > 0 and eligible[left - 1] and actual[left - 1] == old and allowed[left - 1, col]
+                    left > 0
+                    and eligible[left - 1]
+                    and actual[left - 1] == old
+                    and allowed[left - 1, col]
                 ):
                     left -= 1
                 q["intervals"][str(int(source))] = [int(left), int(clear)]
@@ -327,7 +405,9 @@ def optional_duration_evidence(pt, q, run_end, delta, context):
     actual, valid = context["actual"], context["valid"]
     truth_end = at
     while (
-        truth_end + 1 < len(actual) and valid[truth_end + 1] and actual[truth_end + 1] == q["new_source"]
+        truth_end + 1 < len(actual)
+        and valid[truth_end + 1]
+        and actual[truth_end + 1] == q["new_source"]
     ):
         truth_end += 1
 
@@ -401,7 +481,9 @@ def score_task(
 ):
     if exact:
         neutrality = transition_neutrality(alarms, questions, neutrality, delta, state_context)
-    required = [q for q in questions if q["required"] and not q.get("prediction_guard_required", False)]
+    required = [
+        q for q in questions if q["required"] and not q.get("prediction_guard_required", False)
+    ]
     guarded = [q for q in questions if q.get("prediction_guard_required", False)]
     rejected = {}
 
@@ -455,7 +537,9 @@ def score_task(
 
     guard_remaining = [i for i in range(len(alarms)) if i not in used_p]
     guard_pairs_local = match_pairs(
-        [alarms[i] for i in guard_remaining], guarded, lambda pi, q: compatible(guard_remaining[pi], q)
+        [alarms[i] for i in guard_remaining],
+        guarded,
+        lambda pi, q: compatible(guard_remaining[pi], q),
     )
     guard_pairs = [(guard_remaining[pi], qi) for pi, qi in guard_pairs_local]
     used_p.update(pi for pi, qi in guard_pairs)
@@ -500,7 +584,8 @@ def score_task(
             + [q["time"] for ai, q in enumerate(guarded) if ai not in used_guard]
         ),
         neutral_FN_evidence=[
-            dict(time=required[ai]["time"], **missed_evidence[required[ai]["time"]]) for ai in neutral_q
+            dict(time=required[ai]["time"], **missed_evidence[required[ai]["time"]])
+            for ai in neutral_q
         ],
     )
 
@@ -510,7 +595,9 @@ class Accumulator:
         self.windows = 0
         self.events = Counter()
         self.identity = Counter()
-        self.counts = {s: {m: {t: empty_counts() for t in TOLERANCES} for m in MODES} for s in SCOPES}
+        self.counts = {
+            s: {m: {t: empty_counts() for t in TOLERANCES} for m in MODES} for s in SCOPES
+        }
         self.details = {s: {t: Counter() for t in TOLERANCES} for s in SCOPES}
 
     def merge(self, other):
@@ -546,8 +633,8 @@ class Accumulator:
                     )
         identity = dict(self.identity)
         for k in ("raw_correct", "acceptable_correct"):
-            identity[k.replace("correct", "accuracy")] = identity.get(k, 0) / max(
-                identity.get("count", 0), 1
+            identity[k.replace("correct", "accuracy")] = (
+                100 * identity.get(k, 0) / max(identity.get("count", 0), 1)
             )
         return {
             s: {m: {str(t): finish_counts(self.counts[s][m][t]) for t in TOLERANCES} for m in MODES}
@@ -591,7 +678,9 @@ def score_events_case(case, origins, prediction, paper=True):
         edges = np.flatnonzero(ctx["target"] == task)
         sources = ctx["source"][edges]
         allowed = membership(tg[:, :, edges])
-        joint = bidirectional_membership(tg[:, :, edges], prediction[:, :, edges], a[:, :, task], sources)
+        joint = bidirectional_membership(
+            tg[:, :, edges], prediction[:, :, edges], a[:, :, task], sources
+        )
         source_equal = p[:, :, task, None] == sources[None, None]
         true_good = (source_equal & allowed).any(-1)
         good = (source_equal & joint).any(-1)
@@ -615,7 +704,13 @@ def score_events_case(case, origins, prediction, paper=True):
         stable = events(masks["stable"][row, :, task], a[row, :, task])
         optional = events(masks["optional"][row, :, task], a[row, :, task])
         questions = truth_questions(
-            a[row, :, task], actual[origins[row], task], stable, allowed, origin_allowed, valid, sources
+            a[row, :, task],
+            actual[origins[row], task],
+            stable,
+            allowed,
+            origin_allowed,
+            valid,
+            sources,
         )
         joint = bidirectional_membership(
             tg[row][:, edges], prediction[row][:, edges], a[row, :, task], sources
@@ -623,7 +718,9 @@ def score_events_case(case, origins, prediction, paper=True):
         questions, violations = scoring_questions(
             questions, a[row, :, task], p[row, :, task], valid, allowed, joint, sources
         )
-        neutrality = alarm_neutrality(p[row, :, task], observed[row, task], valid, joint, sources, alarms)
+        neutrality = alarm_neutrality(
+            p[row, :, task], observed[row, task], valid, joint, sources, alarms
+        )
         missed_evidence = missed_event_evidence(p[row, :, task], valid, joint, sources, questions)
         state_context = duration_context(
             a[row, :, task], p[row, :, task], valid, allowed, joint, sources, stable
@@ -643,7 +740,9 @@ def score_events_case(case, origins, prediction, paper=True):
                 )
         else:
             last_optional = (
-                optional[-1:] if optional and (not stable or optional[-1][0] > stable[-1][0]) else []
+                optional[-1:]
+                if optional and (not stable or optional[-1][0] > stable[-1][0])
+                else []
             )
             scopes = [
                 ("full_process", alarms, questions, optional),
@@ -652,7 +751,15 @@ def score_events_case(case, origins, prediction, paper=True):
         for scope, aa, qq, oo in scopes:
             for delta in TOLERANCES:
                 scored = score_task(
-                    aa, qq, oo, neutrality, delta, missed_evidence, violations, state_context, exact=paper
+                    aa,
+                    qq,
+                    oo,
+                    neutrality,
+                    delta,
+                    missed_evidence,
+                    violations,
+                    state_context,
+                    exact=paper,
                 )
                 for mode in MODES:
                     add_counts(acc.counts[scope][mode][delta], scored[mode])
@@ -690,16 +797,26 @@ def score_events_case(case, origins, prediction, paper=True):
     lookup = {int(o): i for i, o in enumerate(origins)}
     for task in np.flatnonzero(multi):
         changes = (
-            np.flatnonzero(valid[1:, task] & valid[:-1, task] & (actual[1:, task] != actual[:-1, task]))
+            np.flatnonzero(
+                valid[1:, task] & valid[:-1, task] & (actual[1:, task] != actual[:-1, task])
+            )
             + 1
         )
         if not len(changes):
             continue
         tau = int(changes[-1])
         final = int(labels["final_parent"][task])
-        if final < 0 or tau - 10 not in lookup or tau + 1 >= len(actual) or not valid[tau + 1, task]:
+        if (
+            final < 0
+            or tau - 10 not in lookup
+            or tau + 1 >= len(actual)
+            or not valid[tau + 1, task]
+        ):
             continue
-        if actual[tau + 1, task] != final or ((actual[tau:, task] != final) & valid[tau:, task]).any():
+        if (
+            actual[tau + 1, task] != final
+            or ((actual[tau:, task] != final) & valid[tau:, task]).any()
+        ):
             continue
         acc.identity.update(final_count=1, final_correct=int(p[lookup[tau - 10], 9, task] == final))
     return acc

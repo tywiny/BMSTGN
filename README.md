@@ -1,6 +1,6 @@
 # BMSTGN
 
-BMSTGN 根据任务图和最近 10 帧观测，预测未来 10 帧各有向边的时间间隔（TG）。每帧间隔 30 分钟，单次预测覆盖 5 小时。仓库包含主模型、八种对比模型和六组消融的代码、参数及数据。
+BMSTGN 根据任务图和最近 10 帧观测，预测未来 10 帧各有向边的时间间隔（TG）。每帧间隔 30 分钟，单次预测覆盖 5 小时。仓库包含主模型、八种对比模型和七组消融的代码、参数及数据。
 
 ## 快速运行
 
@@ -31,17 +31,19 @@ python run.py evaluate --model bmstgn --split test --output results/bmstgn.json
 
 | 文件 | 用途 |
 |---|---|
-| `bmstgn.py` | BMSTGN 与六组消融 |
+| `bmstgn.py` | BMSTGN 与七组消融 |
 | `baselines.py` | GRU、STGCN、Graph WaveNet、BSTAN、BTGCN |
 | `rollout.py` | GCN–GRU + rollout 与计划递推 |
 | `data.py` | 按案例和窗口读取模型输入 |
-| `metrics.py` | 瓶颈任务（BT）身份与迁移评分 |
+| `metrics.py` | 瓶颈任务（BT）身份与迁移评分、95% 置信区间 |
 | `run.py` | 训练、预测、评估与 Persistence |
-| `weights/` | 13 份用于预测和评估的模型权重，以及 GCN–GRU 的训练集归一化参数 |
+| `weights/` | 14 份用于预测和评估的模型权重，以及 GCN–GRU 的训练集归一化参数 |
 | `data/` | 案例张量、目标和划分清单 |
 
 ## 评估输出
 
 `mae_s`、`rmse_s` 为各案例指标的等权平均，单位为秒。`change_mae_s` 评价相邻参考 TG 变化超过 60 秒的有效位置，`final_tg_mae_s` 评价 TG 确定时刻。带 `micro_` 的指标按全部有效边点汇总。
 
-`window_accuracy` 统计发生 BT 变化的有效窗口中十步身份全部正确的比例。`final_accuracy` 统计提前十步对末次变化后最终 BT 身份的命中率。`process_f1_d0`、`final_f1_d0` 分别对应过程迁移和末次迁移的同帧 F1；`d1` 允许偏差一步。准确率与 F1 以 0–1 表示，完整 JSON 保留计数。
+`window_accuracy` 统计发生 BT 变化的有效窗口中十步身份全部正确的比例。`final_accuracy` 统计提前十步对末次变化后最终 BT 身份的命中率。`process_f1_d0`、`final_f1_d0` 分别对应过程迁移和末次迁移的同帧 F1；`d1` 允许偏差一步。准确率、精确率、召回率及 F1 的单位为 %，完整 JSON 保留计数。
+
+`confidence_intervals` 保存点估计 `estimate`、95% 置信区间下界 `lower`、上界 `upper` 和单位 `unit`。区间在固定模型权重下，以完整计划为单位重采样 20,000 次，取 2.5% 和 97.5% 分位数；各模型使用相同重采样。TG 指标按计划等权平均，准确率和 F1 按重采样后的计数汇总计算。
