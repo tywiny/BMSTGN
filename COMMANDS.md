@@ -1,6 +1,6 @@
-# 运行命令
+# Commands
 
-以下命令在仓库根目录执行。`evaluate` 默认加载随包的已训练权重，输出准确率/F1（%）、TG 误差（秒）及 95% 置信区间。`train` 从头训练并将结果写入新目录；BMSTGN 和各消融的默认训练种子为 `20261022`，可用 `--seed` 指定。默认批次为 32，训练上限为 40 轮。
+Run these commands from the repository root. By default, `evaluate` loads the included trained weights and reports accuracy and F1 in percent, TG errors in seconds, and 95% confidence intervals. `train` starts from scratch and writes its outputs to a new directory. The default training seed for BMSTGN and its ablations is `20261022`. Override it with `--seed`. The default batch size is 32, and the training limit is 40 epochs.
 
 ## BMSTGN
 
@@ -13,9 +13,9 @@ python run.py train --model bmstgn --output runs/bmstgn
 python run.py evaluate --model bmstgn --split test --weights runs/bmstgn/model.pt
 ```
 
-## 对比模型
+## Baselines
 
-| 模型 | 命令名称 |
+| Model | Command name |
 |---|---|
 | GRU | `gru` |
 | STGCN | `stgcn` |
@@ -26,7 +26,7 @@ python run.py evaluate --model bmstgn --split test --weights runs/bmstgn/model.p
 | Persistence | `persistence` |
 | Plan–CPM | `plan_cpm` |
 
-评估全部对比模型（PowerShell）：
+Evaluate all baselines in PowerShell.
 
 ```powershell
 foreach ($model in 'gru','stgcn','graph_wavenet','bstan','btgcn','gcn_gru','persistence','plan_cpm') {
@@ -35,7 +35,7 @@ foreach ($model in 'gru','stgcn','graph_wavenet','bstan','btgcn','gcn_gru','pers
 }
 ```
 
-分别训练六种学习型对比模型：
+Train the six learned baselines separately.
 
 ```powershell
 foreach ($model in 'gru','stgcn','graph_wavenet','bstan','btgcn','gcn_gru') {
@@ -44,13 +44,13 @@ foreach ($model in 'gru','stgcn','graph_wavenet','bstan','btgcn','gcn_gru') {
 }
 ```
 
-单独评估某次训练，例如：
+To evaluate the weights from a specific training run, use `--weights`.
 
 ```powershell
 python run.py evaluate --model gcn_gru --weights runs/gcn_gru/model.pt --split test
 ```
 
-## 消融
+## Ablations
 
 ### -PM
 
@@ -102,7 +102,7 @@ python run.py evaluate --ablation=-CM --split test --output results/cm_test.json
 python run.py train --ablation=-CM --seed 20261022 --output runs/no_cm
 ```
 
-## 关键路径
+## Critical paths
 
 ```powershell
 python run.py evaluate-paths --split test --cohort-only
@@ -112,15 +112,15 @@ python run.py evaluate-paths --model gcn_gru --split test --output results/paths
 python run.py evaluate-paths --model persistence --split test --output results/paths_persistence.json
 ```
 
-`--cohort-only` 仅统计评价目标和窗口。完整评价支持同一组模型、消融及 `--weights` 参数，输出准确率、F1（%）和 95% 置信区间。
+`--cohort-only` counts evaluation targets and windows. A full evaluation accepts the same model, ablation, and `--weights` arguments and reports accuracy and F1 in percent with 95% confidence intervals.
 
-## 六组额外划分
+## Six additional partitions
 
-`data/partitions.json` 保存 `split_01` 至 `split_06` 的计划编号。每组使用 36 个训练计划、12 个验证计划和 12 个测试计划，直接读取现有数据文件。三个模型均从头训练，种子为 `20261022`，批次为 32，训练 40 轮。
+`data/partitions.json` lists the plans for `split_01` through `split_06`. Each partition reads the existing case files and uses 36 training plans, 12 validation plans, and 12 test plans. Each of the three models is trained from scratch for 40 epochs with seed `20261022` and batch size 32.
 
-在第 1、5、10、20、30、40 轮验证，依次按验证集过程迁移 F1（容差一步）最高、TG MAE 最低、轮次最早选择权重。GCN–GRU 在各组训练集上分别拟合归一化参数，并随权重保存。测试命令须加载对应划分的权重。
+Validation runs at epochs 1, 5, 10, 20, 30, and 40. Weights are selected by the highest validation F1 for process transitions with one-step tolerance, then the lowest TG MAE, then the earliest epoch. GCN–GRU fits normalization parameters on the training split of each partition and saves them with the weights. For testing, load the weights from the corresponding partition.
 
-运行全部 18 次训练和测试（PowerShell）：
+Run all 18 training and test runs in PowerShell.
 
 ```powershell
 foreach ($partition in 'split_01','split_02','split_03','split_04','split_05','split_06') {
@@ -135,16 +135,16 @@ foreach ($partition in 'split_01','split_02','split_03','split_04','split_05','s
 python run.py summarize-splits --input runs/cross_split --output results/cross_split_summary.json
 ```
 
-单独运行一组：
+To run a single partition, use the following commands.
 
 ```powershell
 python run.py train --model bmstgn --partition split_01 --seed 20261022 --output runs/split_01_bmstgn
 python run.py evaluate --model bmstgn --partition split_01 --weights runs/split_01_bmstgn/model.pt --split test --output results/split_01_bmstgn.json
 ```
 
-汇总输出六组结果的均值 `mean` 和样本标准差 `sd`。每次测试的 `confidence_intervals` 为计划级重采样得到的 95% 置信区间。训练输出目录须为新目录。
+The summary reports the mean (`mean`) and sample standard deviation (`sd`) across the six partitions. In each test report, `confidence_intervals` contains 95% confidence intervals from resampling complete plans. Specify a new directory for each training run.
 
-## 前序数分组
+## Analysis by predecessor count
 
 ```powershell
 python run.py analyze --model bmstgn --by degree --split test --output results/degree_bmstgn.json
@@ -152,9 +152,9 @@ python run.py analyze --model graph_wavenet --by degree --split test --output re
 python run.py analyze --model gcn_gru --by degree --split test --output results/degree_gcn_gru.json
 ```
 
-按直接前序数 2、3、≥4 分组，输出整窗口身份准确率、最终身份准确率，以及过程和末次迁移 F1（同帧、容差一步）。
+Group tasks by direct predecessor count (2, 3, or at least 4). The report includes whole-window identity accuracy, final identity accuracy, and F1 for process and final transitions with exact frame matching and one-step tolerance.
 
-## 预测步长
+## Analysis by forecast lead
 
 ```powershell
 python run.py analyze --model bmstgn --by lead --split test --output results/lead_bmstgn.json
@@ -162,6 +162,6 @@ python run.py analyze --model graph_wavenet --by lead --split test --output resu
 python run.py analyze --model gcn_gru --by lead --split test --output results/lead_gcn_gru.json
 ```
 
-按 1–10 步（0.5–5 小时）统计 TG 误差、变化窗口内该步身份准确率、过程和末次迁移时的身份准确率，以及同帧迁移 F1。F1 中的 TP 归入匹配步、FP 归入预测步、FN 归入参考事件步。
+For each lead from 1 to 10 steps (0.5 to 5 hours), the report includes TG errors, identity accuracy at that step within windows with changes, identity accuracy at process and final transitions, and F1 for transitions matched on the same frame. True positives are assigned to the matched step, false positives to the predicted step, and false negatives to the reference event step.
 
-`--by all` 一次完成两类分析。`analyze` 同样支持 `--ablation`、`--partition` 和 `--weights`。`records` 中 TG 误差单位为秒，准确率和 F1 单位为 %；`lower`、`upper` 为以完整计划重采样 20,000 次所得的 95% 置信区间。输出文件仅写入指定的本地目录。
+Use `--by all` to run both analyses together. `analyze` also accepts `--ablation`, `--partition`, and `--weights`. In `records`, TG errors are in seconds and accuracy and F1 are in percent. The `lower` and `upper` fields give the 95% confidence interval bounds from 20,000 bootstrap resamples of complete plans. Outputs are written to the specified local directory.

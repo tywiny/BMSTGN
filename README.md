@@ -1,10 +1,10 @@
 # BMSTGN
 
-BMSTGN 根据任务图和最近 10 帧观测，预测未来 10 帧各有向边的时间间隔（TG）。每帧间隔 30 分钟，单次预测覆盖 5 小时。仓库包含主模型、八种对比模型和七组消融的代码、参数及数据。
+BMSTGN uses a task graph and the latest 10 observation frames to predict time gaps (TG) on directed edges over the next 10 frames. Frames are 30 minutes apart, giving a five-hour forecast horizon. The repository includes code, weights, and data for the main model, eight baselines, and seven ablations.
 
-## 快速运行
+## Quick start
 
-在仓库根目录执行。已验证的环境为 Python 3.9.19、PyTorch 2.3.1、NumPy 1.26.4。如果使用 Conda，可先运行 `conda create -n bmstgn python=3.9 -y` 和 `conda activate bmstgn`。
+Run the following commands from the repository root. The code was tested with Python 3.9.19, PyTorch 2.3.1, and NumPy 1.26.4. If using Conda, run `conda create -n bmstgn python=3.9 -y` and `conda activate bmstgn` first.
 
 ```powershell
 python -m pip install -r requirements.txt
@@ -13,55 +13,55 @@ python run.py predict --device cpu
 python run.py evaluate --model bmstgn --split test --output results/bmstgn.json
 ```
 
-`check` 校验发布文件，并用一个验证窗口运行所有模型。预测结果形状为 `[批次, 10, 边数]`，单位为小时。终端以秒显示第一条边的预测。通过 `predict --output results/prediction.npz` 可保存全部边的预测及对应边索引。计算设备默认自动选择，也可指定 `--device cpu` 或 `--device cuda`。
+`check` verifies the release files and runs all models on one validation window. Predictions have shape `[batch, 10, edges]` and are expressed in hours. The terminal displays predictions for the first edge in seconds. Use `predict --output results/prediction.npz` to save predictions for all edges together with their indices. The device is selected automatically by default. Use `--device cpu` or `--device cuda` to specify it.
 
-[全部训练、评估与消融命令](COMMANDS.md) · [正文附表 1 与发布字段对照](data/README.md)
+[Training, evaluation, and ablation commands](COMMANDS.md) · [Dataset fields and their mapping to Supplementary Table 1](data/README.md)
 
-## 数据划分
+## Data splits
 
-下表为默认划分。六组额外划分保存在 `data/partitions.json`，每组均按完整计划分为 36/12/12，复用同一套案例文件。
+The table shows the default partition. The six additional partitions in `data/partitions.json` each assign 36 plans to training, 12 to validation, and 12 to testing. All partitions use the same case files.
 
-| 集合 | 案例数 | 预测窗口数 |
+| Split | Cases | Forecast windows |
 |---|---:|---:|
-| 训练 | 36 | 14,595 |
-| 验证 | 12 | 5,481 |
-| 测试 | 12 | 5,424 |
+| Train | 36 | 14,595 |
+| Validation | 12 | 5,481 |
+| Test | 12 | 5,424 |
 
-每个案例对应一个完整生产计划，合计 6,518 个任务和 13,511 条依赖边。同一计划的全部窗口位于同一集合。输入按正文附表 1 分为任务工艺与材料信息、任务计划信息、制造系统静态信息、任务执行信息、制造系统动态信息；历史 TG 与候选、确认 BT 另按边对齐。输入只取预测起点及此前可用的帧。监督和评分字段独立存放。
+Each case represents a complete production plan. Together, the plans contain 6,518 tasks and 13,511 dependency edges. All windows from a plan belong to the same split within a partition. Supplementary Table 1 groups the inputs into task process and material information, planning information, static manufacturing system information, task execution information, and dynamic manufacturing system information. Historical TG and candidate and confirmed bottleneck task (BT) membership are aligned to edges. Inputs use only frames available by the forecast origin. Supervision and scoring fields are stored separately.
 
-## 文件
+## Repository contents
 
-| 文件 | 用途 |
+| File | Purpose |
 |---|---|
-| `bmstgn.py` | BMSTGN 与七组消融 |
-| `baselines.py` | GRU、STGCN、Graph WaveNet、BSTAN、BTGCN |
-| `rollout.py` | GCN–GRU + rollout 与计划递推 |
-| `data.py` | 按案例和窗口读取模型输入 |
-| `metrics.py` | 瓶颈任务（BT）身份与迁移评分、95% 置信区间 |
-| `path_metrics.py` | 关键路径身份与迁移评分、95% 置信区间 |
-| `analysis.py` | 前序数分组、预测步长分析及六组划分汇总 |
-| `run.py` | 训练、预测、评估与 Persistence |
-| `weights/` | 14 份用于预测和评估的模型权重，以及 GCN–GRU 的训练集归一化参数 |
-| `data/` | 案例张量、目标和划分清单 |
+| `bmstgn.py` | BMSTGN and its seven ablations |
+| `baselines.py` | GRU, STGCN, Graph WaveNet, BSTAN, and BTGCN |
+| `rollout.py` | GCN–GRU with rollout and recursive plan scheduling |
+| `data.py` | Loads model inputs by case and forecast window |
+| `metrics.py` | BT identity and transition metrics with 95% confidence intervals |
+| `path_metrics.py` | Critical path identity and transition metrics with 95% confidence intervals |
+| `analysis.py` | Analysis by predecessor count and forecast lead, plus summaries across partitions |
+| `run.py` | Training, prediction, evaluation, and the Persistence baseline |
+| `weights/` | 14 sets of model weights for prediction and evaluation, plus training-set normalization parameters for GCN–GRU |
+| `data/` | Case tensors, targets, and split manifests |
 
-`train --partition split_01` 至 `split_06` 支持 BMSTGN、Graph WaveNet 和 GCN–GRU 的额外划分训练。训练种子为 20261022，按验证集选择权重；GCN–GRU 的归一化参数仅从对应训练集拟合。完整训练与测试流程见 [运行命令](COMMANDS.md#六组额外划分)。
+Use `train --partition split_01` through `split_06` to train BMSTGN, Graph WaveNet, and GCN–GRU on the additional partitions. Training uses seed `20261022`, and weights are selected on the validation split. GCN–GRU fits its normalization parameters on the training split of each partition. See the [training and evaluation commands](COMMANDS.md#six-additional-partitions).
 
-## 评估输出
+## Evaluation outputs
 
-`mae_s`、`rmse_s` 为各案例指标的等权平均，单位为秒。`change_mae_s` 评价相邻参考 TG 变化超过 60 秒的有效位置，`final_tg_mae_s` 评价 TG 确定时刻。带 `micro_` 的指标按全部有效边点汇总。
+`mae_s` and `rmse_s` average the case-level metrics equally and are reported in seconds. `change_mae_s` evaluates valid points where the reference TG changes by more than 60 seconds between adjacent frames. `final_tg_mae_s` evaluates TG at the frame when it becomes fixed. Metrics prefixed with `micro_` pool all valid edge-level observations.
 
-`window_accuracy` 统计发生 BT 变化的有效窗口中十步身份全部正确的比例。`final_accuracy` 统计提前十步对末次变化后最终 BT 身份的命中率。`process_f1_d0`、`final_f1_d0` 分别对应过程迁移和末次迁移的同帧 F1；`d1` 允许偏差一步。准确率、精确率、召回率及 F1 的单位为 %，完整 JSON 保留计数。
+`window_accuracy` is the percentage of eligible windows with a BT change in which the predicted identities are correct at all ten steps. `final_accuracy` is the percentage of correct predictions of the final BT identity, issued ten steps before the last change. `process_f1_d0` and `final_f1_d0` apply exact frame matching to process transitions and the final transition, respectively. The `d1` metrics allow a one-step difference. Accuracy, precision, recall, and F1 are reported as percentages. The full JSON output includes counts.
 
-`confidence_intervals` 保存点估计 `estimate`、95% 置信区间下界 `lower`、上界 `upper` 和单位 `unit`。区间在固定模型权重下，以完整计划为单位重采样 20,000 次，取 2.5% 和 97.5% 分位数；各模型使用相同重采样。TG 指标按计划等权平均，准确率和 F1 按重采样后的计数汇总计算。
+`confidence_intervals` contains the point estimate (`estimate`), the lower and upper 95% bounds (`lower` and `upper`), and the unit (`unit`). With model weights fixed, intervals use the 2.5th and 97.5th percentiles from 20,000 bootstrap resamples of complete plans. All models use the same resamples. TG metrics give each sampled plan equal weight. Accuracy and F1 are computed from the pooled counts in each resample.
 
-## 关键路径评价
+## Critical path evaluation
 
-`python run.py evaluate-paths --split test` 评价最终路径至少含 20 个任务节点、且参考路径发生过变化的非终点任务。路径按完整有序节点序列比较。
+`python run.py evaluate-paths --split test` evaluates nonterminal tasks whose final paths contain at least 20 tasks and whose reference paths changed. Paths are compared as complete ordered sequences of nodes.
 
-`global_change_accuracy` 为图内发生 BT 变化时目标路径十步全部正确的比例；`path_change_accuracy` 进一步限定目标路径自身发生变化。两项均要求未来十步参考路径完整。`final_path_accuracy` 评价末次路径迁移前十步起报的最终路径身份；`final_path_f1_d0`、`final_path_f1_d1` 评价完整窗口中末次路径迁移，分别采用同帧和偏差一步的容差。末次参考迁移后的路径须等于最终路径并保持不变，预测事件的迁移前后完整路径均须匹配。
+`global_change_accuracy` measures the percentage of target paths predicted correctly at all ten steps in windows with a BT change anywhere in the graph. `path_change_accuracy` restricts this evaluation to target paths that changed. Both measures require complete reference paths at all ten future steps. `final_path_accuracy` evaluates the final path identity from a forecast issued ten steps before the last path transition. `final_path_f1_d0` and `final_path_f1_d1` score the last path transition in complete windows with exact frame matching and one-step tolerance, respectively. After the last reference transition, the reference path must equal the final path and remain stable. The complete paths on both sides of a predicted transition must match.
 
-`cohort` 返回目标数及目标与窗口组合数，`by_case` 返回逐计划计数。评价直接使用现有数据文件，准确率和 F1 的单位为 %；95% 置信区间按完整计划重采样计算。
+`cohort` reports counts of target tasks and target-window pairs. `by_case` reports counts by plan. Accuracy and F1 are percentages. The 95% confidence intervals use bootstrap resampling of complete plans.
 
-## 分组与步长分析
+## Analysis by predecessor count and forecast lead
 
-`python run.py analyze --model bmstgn --by all --split test --output results/analysis_bmstgn.json` 同时输出前序数分组和预测步长分析。前序数分为 2、3、≥4；步长为 1–10，每步 30 分钟。分析沿用现有身份和迁移评分，输出点估计、95% 置信区间及逐计划计数。TG 误差按计划等权平均，准确率和 F1 按计数汇总。
+`python run.py analyze --model bmstgn --by all --split test --output results/analysis_bmstgn.json` runs both analyses. Direct predecessor counts are grouped into 2, 3, and at least 4. Forecast leads range from 1 to 10 steps at 30 minutes per step. The analyses use the same identity and transition metrics and report point estimates, 95% confidence intervals, and counts by plan. TG errors give each plan equal weight. Accuracy and F1 use pooled counts.
